@@ -1,0 +1,35 @@
+name: Check Certificate
+
+on:
+  schedule:
+    - cron: '0 0 */3 * *'
+  workflow_dispatch:
+    inputs:
+      debug:
+        description: 'Enable debug mode'
+        default: ''
+        required: false
+
+jobs:
+  renew-certificate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout codebase
+        uses: actions/checkout@v3
+      
+      - name: Set up Go
+        uses: actions/setup-go@v3
+        with:
+          go-version: ^1.23
+
+      - name: Build
+        run: go build
+      
+      - name: Run
+        run: ./AliyunCertRenew
+        env:
+          ACCESS_KEY_ID: ${{ secrets.ACCESS_KEY_ID }}
+          ACCESS_KEY_SECRET: ${{ secrets.ACCESS_KEY_SECRET }}
+          DOMAIN: ${{ secrets.DOMAIN }}
+          DEBUG: ${{ github.event.inputs.debug }}
