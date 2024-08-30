@@ -75,6 +75,69 @@ func GetBasicInfo(client *cas.Client, domain string) (needRenew bool, results []
 	return
 }
 
+func ApplyNewCert(client *cas.Client, domain string) (newCertId int64, err error) {
+	// createCertReq := &cas.CreateCertificateForPackageRequestRequest{
+	// 	Domain:       tea.String(domain),
+	// 	ProductCode:  tea.String("digicert-free-1-free"),
+	// 	ValidateType: tea.String("DNS"),
+	// }
+
+	// resp, err := client.CreateCertificateForPackageRequestWithOptions(createCertReq, &util.RuntimeOptions{})
+	// if err != nil {
+	// 	return
+	// }
+	// log.Debugf("CreateCertificateForPackageRequest response: %+v", resp)
+	// orderId := resp.Body.OrderId
+
+	log.Info("New certificate request created for ", domain)
+
+	debugId := int64(12186455)
+	orderId := &debugId
+
+	for i := 0; i < 20; i++ {
+		getOrderReq := &cas.ListUserCertificateOrderRequest{
+			Keyword:   tea.String(domain),
+			OrderType: tea.String("CPACK"),
+		}
+
+		orderResp, err := client.ListUserCertificateOrderWithOptions(getOrderReq, &util.RuntimeOptions{})
+		if err != nil {
+			return 0, err
+		}
+		log.Debugf("ListUserCertificateOrder response: %+v", orderResp)
+
+		for _, cpackEntry := range orderResp.Body.CertificateOrderList {
+			if *cpackEntry.OrderId == *orderId {
+				log.Info("Order current status: ", *cpackEntry.Status)
+				if *cpackEntry.Status == "ISSUED" {
+					getCertReq := &cas.ListUserCertificateOrderRequest{
+						Keyword:   tea.String(domain),
+						OrderType: tea.String("CERT"),
+					}
+
+					certResp, err := client.ListUserCertificateOrderWithOptions(getCertReq, &util.RuntimeOptions{})
+					if err != nil {
+						return 0, err
+					}
+
+					log.Debugf("ListUserCertificateOrder response: %+v", certResp)
+					for _, certEntry := range certResp.Body.CertificateOrderList {
+						if *certEntry.InstanceId == *cpackEntry.InstanceId {
+							return *certEntry.CertificateId, nil
+						}
+					}
+
+					return 0, fmt.Errorf("cert not found")
+				}
+			}
+		}
+
+		time.Sleep(10 * time.Second)
+	}
+
+	return 0, fmt.Errorf("timeout waiting for cert to be issued")
+}
+
 func printVersion() {
 	if info, ok := debug.ReadBuildInfo(); ok {
 		var revision string
@@ -134,7 +197,7 @@ func main() {
 	log.Info("Domains to check: ", domainList)
 
 	for _, domain := range domainList {
-		log.Infof("Checking status: %s", domain)
+		log.Infof(">>> Checking %s", domain)
 		needRenew, resources, err := GetBasicInfo(client, domain)
 
 		if err != nil {
@@ -142,7 +205,21 @@ func main() {
 			continue
 		}
 
-		log.Debug(needRenew)
-		log.Debug(resources)
+		_ = needRenew
+		_ = resources
+
+		// if !needRenew {
+		// 	log.Infof("No renewal needed for %s", domain)
+		// 	continue
+		// }
+
+		log.Info("Certificate renewal needed for ", domain)
+		newCertId, err := ApplyNewCert(client, domain)
+		if err != nil {
+			log.Error("Error applying new cert for ", domain, ": ", err)
+			continue
+		}
+		log.Info("New cert created for ", domain, ": ", newCertId)
+
 	}
 }
