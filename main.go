@@ -76,25 +76,24 @@ func GetBasicInfo(client *cas.Client, domain string) (needRenew bool, results []
 }
 
 func ApplyNewCert(client *cas.Client, domain string) (newCertId int64, err error) {
-	// createCertReq := &cas.CreateCertificateForPackageRequestRequest{
-	// 	Domain:       tea.String(domain),
-	// 	ProductCode:  tea.String("digicert-free-1-free"),
-	// 	ValidateType: tea.String("DNS"),
-	// }
+	createCertReq := &cas.CreateCertificateForPackageRequestRequest{
+		Domain:       tea.String(domain),
+		ProductCode:  tea.String("digicert-free-1-free"),
+		ValidateType: tea.String("DNS"),
+	}
 
-	// resp, err := client.CreateCertificateForPackageRequestWithOptions(createCertReq, &util.RuntimeOptions{})
-	// if err != nil {
-	// 	return
-	// }
-	// log.Debugf("CreateCertificateForPackageRequest response: %+v", resp)
-	// orderId := resp.Body.OrderId
+	resp, err := client.CreateCertificateForPackageRequestWithOptions(createCertReq, &util.RuntimeOptions{})
+	if err != nil {
+		return
+	}
+	log.Debugf("CreateCertificateForPackageRequest response: %+v", resp)
+	orderId := resp.Body.OrderId
 
 	log.Info("New certificate request created for ", domain)
 
-	debugId := int64(12186455)
-	orderId := &debugId
-
 	for i := 0; i < 20; i++ {
+		time.Sleep(10 * time.Second)
+
 		getOrderReq := &cas.ListUserCertificateOrderRequest{
 			Keyword:   tea.String(domain),
 			OrderType: tea.String("CPACK"),
@@ -131,11 +130,59 @@ func ApplyNewCert(client *cas.Client, domain string) (newCertId int64, err error
 				}
 			}
 		}
-
-		time.Sleep(10 * time.Second)
 	}
 
 	return 0, fmt.Errorf("timeout waiting for cert to be issued")
+}
+
+func DeployCert(client *cas.Client, certId int64, resourceIds []int64) error {
+	listContactReq := &cas.ListContactRequest{}
+	contactResp, err := client.ListContactWithOptions(listContactReq, &util.RuntimeOptions{})
+	if err != nil {
+		return err
+	}
+
+	log.Debugf("ListContact response: %+v", contactResp)
+	if len(contactResp.Body.ContactList) == 0 {
+		return fmt.Errorf("no contact found")
+	}
+
+	resourceStrIds := make([]string, len(resourceIds))
+	for i, id := range resourceIds {
+		resourceStrIds[i] = strconv.FormatInt(id, 10)
+	}
+
+	createDeployReq := &cas.CreateDeploymentJobRequest{
+		Name:        tea.String("aliyun-cert-renew-auto-" + strconv.FormatInt(time.Now().Unix(), 10)),
+		ResourceIds: tea.String(strings.Join(resourceStrIds, ",")),
+		CertIds:     tea.String(strconv.FormatInt(certId, 10)),
+		ContactIds:  tea.String(strconv.FormatInt(*contactResp.Body.ContactList[0].ContactId, 10)),
+		JobType:     tea.String("user"),
+	}
+
+	deployResp, err := client.CreateDeploymentJobWithOptions(createDeployReq, &util.RuntimeOptions{})
+	if err != nil {
+		return err
+	}
+	log.Debugf("CreateDeploymentJob response: %+v", deployResp)
+	log.Info("Deployment job created: ", *deployResp.Body.JobId)
+
+	jobId := deployResp.Body.JobId
+
+	time.Sleep(2 * time.Second)
+	updateDeployReq := &cas.UpdateDeploymentJobStatusRequest{
+		JobId:  jobId,
+		Status: tea.String("scheduling"),
+	}
+
+	updateDeployResp, err := client.UpdateDeploymentJobStatusWithOptions(updateDeployReq, &util.RuntimeOptions{})
+	if err != nil {
+		return err
+	}
+	log.Debugf("UpdateDeploymentJobStatus response: %+v", updateDeployResp)
+	log.Info("Deployment job submitted: ", *jobId)
+
+	return nil
 }
 
 func printVersion() {
@@ -205,13 +252,10 @@ func main() {
 			continue
 		}
 
-		_ = needRenew
-		_ = resources
-
-		// if !needRenew {
-		// 	log.Infof("No renewal needed for %s", domain)
-		// 	continue
-		// }
+		if !needRenew {
+			log.Infof("No renewal needed for %s", domain)
+			continue
+		}
 
 		log.Info("Certificate renewal needed for ", domain)
 		newCertId, err := ApplyNewCert(client, domain)
@@ -221,5 +265,15 @@ func main() {
 		}
 		log.Info("New cert created for ", domain, ": ", newCertId)
 
+		resourceIds := make([]int64, len(resources))
+		for i, res := range resources {
+			resourceIds[i] = *res.Id
+		}
+		err = DeployCert(client, newCertId, resourceIds)
+
+		if err != nil {
+			log.Error("Error deploying new cert for ", domain, ": ", err)
+			continue
+		}
 	}
 }
