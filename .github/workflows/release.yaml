@@ -1,0 +1,106 @@
+name: Release
+
+on:
+  release:
+    types: [released]
+  push:
+    branches:
+      - main
+    paths:
+      - "**/*.go"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/*.yml"
+
+permissions: write-all
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        # Include amd64 on all platforms.
+        goos: [windows, linux, darwin]
+        goarch: [amd64, 386]
+        exclude:
+          # Exclude i386 on darwin.
+          - goarch: 386
+            goos: darwin
+        include:
+          # BEGIN Linux ARM
+          - goos: linux
+            goarch: arm
+            goarm: 7
+          # BEGIN Other architectures
+          - goos: darwin
+            goarch: arm64
+          - goos: linux
+            goarch: arm64
+          - goos: linux
+            goarch: riscv64
+          - goos: windows
+            goarch: arm64
+          - goos: android
+            goarch: arm64
+          # BEGIN MIPS
+          - goos: linux
+            goarch: mips64
+          - goos: linux
+            goarch: mips64le
+          - goos: linux
+            goarch: mipsle
+          - goos: linux
+            goarch: mips
+          # END MIPS
+          # END Other architectures
+      fail-fast: false
+
+    runs-on: ubuntu-latest
+    env:
+      GOOS: ${{ matrix.goos }}
+      GOARCH: ${{ matrix.goarch }}
+      GOARM: ${{ matrix.goarm }}
+      CGO_ENABLED: 0
+
+    steps:
+      - name: Checkout codebase
+        uses: actions/checkout@v3
+
+      - name: Show workflow information
+        id: get_filename
+        run: |
+          export _NAME=$GOOS-$GOARCH$GOARM
+          echo "GOOS: $GOOS, GOARCH: $GOARCH, GOARM: $GOARM, RELEASE_NAME: $_NAME"
+          echo "::set-output name=ASSET_NAME::$_NAME"
+          echo "ASSET_NAME=$_NAME" >> $GITHUB_ENV
+
+      - name: Set up Go
+        uses: actions/setup-go@v3
+        with:
+          go-version: ^1.23
+
+      - name: Get project dependencies
+        run: go mod download
+
+      - name: Build
+        run: |
+          mkdir -p build_assets
+          go build -v -o build_assets/AliyunCertRenew -trimpath -ldflags "-s -w -buildid=" .
+
+      - name: Rename Windows
+        if: matrix.goos == 'windows'
+        run: |
+          cd ./build_assets || exit 1
+          mv AliyunCertRenew AliyunCertRenew.exe
+
+      - name: Create ZIP archive
+        run: |
+          pushd build_assets || exit 1
+          zip -9vr ../AliyunCertRenew-$ASSET_NAME.zip .
+          popd || exit 1
+      
+      - name: Upload release binary
+        if: github.event_name == 'release'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          gh release upload ${{ github.event.release.tag_name }} AliyunCertRenew-${{ steps.get_filename.outputs.ASSET_NAME }}.zip
